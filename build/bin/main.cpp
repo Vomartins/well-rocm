@@ -13,6 +13,45 @@
 
 #include <suitesparse/umfpack.h>
 
+#include <rocsparse/rocsparse.h>
+
+#define HIP_CALL(call)                                     \
+  do {                                                     \
+    hipError_t err = call;                                 \
+    if (hipSuccess != err) {                               \
+      printf("HIP ERROR (code = %d, %s) at %s:%d\n", err,  \
+             hipGetErrorString(err), __FILE__, __LINE__);  \
+      exit(1);                                             \
+    }                                                      \
+  } while (0)
+
+#define ROCSOLVER_CALL(call)                                                   \
+  do {                                                                         \
+    rocblas_status err = call;                                                 \
+    if (rocblas_status_success != err) {                                       \
+      printf("rocSOLVER ERROR (code = %d) at %s:%d\n", err, __FILE__,          \
+             __LINE__);                                                        \
+      exit(1);                                                                 \
+    }                                                                          \
+  } while (0)
+
+#define ROCSPARSE_CALL(call)                                                   \
+do {                                                                           \
+    rocsparse_status err = call;                                               \
+    if (rocsparse_status_success != err) {                                     \
+    printf("rocSPARSE ERROR (code = %d) at %s:%d\n", err, __FILE__,            \
+            __LINE__);                                                         \
+    exit(1);                                                                   \
+    }                                                                          \
+} while (0)
+
+void checkHIPAlloc(void* ptr) {
+    if (ptr == nullptr) {
+        std::cerr << "HIP malloc failed." << std::endl;
+        exit(1);
+    }
+}
+
 template <class Scalar>
 void readVector(std::vector<Scalar>& vec, std::string filename){
     std::ifstream input_file(filename);
@@ -72,226 +111,6 @@ bool compareTuple(const std::tuple<double, int, int>& a, const std::tuple<double
     return std::get<2>(a) < std::get<2>(b);
 }
 
-void CustomtoCSR(std::vector<double>& Dvals, std::vector<int>& Drows, std::vector<int>& Dcols, std::vector<double>& csrDvals, std::vector<int>& csrDcols, std::vector<int>& csrDrows){
-    int D_m = Dcols.size() - 1;
-    std::vector<int> Cols(Dvals.size());
-
-    for (int i=0; i< Dcols.size()-1; i++){
-        for (int j=Dcols[i]; j<Dcols[i+1]; j++){
-            Cols[j] = i;
-        }
-    }
-
-    std::vector<std::tuple<double, int, int>> COO;
-
-    for (int i=0; i<Dvals.size(); i++){
-        COO.push_back(std::make_tuple(Dvals[i], Drows[i], Cols[i]));
-    }
-
-    std::sort(COO.begin(), COO.end(), compareTuple);
-
-    auto new_end = std::remove_if(COO.begin(), COO.end(),
-        [](const auto& t) {
-            // Check if the first element (index 0) is equal to zero
-            return std::get<0>(t) == 0;
-        });
-
-    COO.erase(new_end, COO.end());
-
-    csrDvals.resize(COO.size());
-    csrDcols.resize(COO.size());
-    csrDrows.assign(D_m + 1, 0);
-
-    for (int i=0; i<COO.size(); i++){
-        csrDvals[i] = std::get<0>(COO[i]);
-        csrDcols[i] = std::get<2>(COO[i]);
-
-        csrDrows[std::get<1>(COO[i]) + 1]++;
-    }
-
-    std::partial_sum(csrDrows.begin(), csrDrows.end(), csrDrows.begin());
-}
-
-void removeZerosFromCSCInPlace(
-    std::vector<double>& A_values,
-    std::vector<int>& A_row_ind,
-    std::vector<int>& A_col_ptr) {
-
-    // Number of columns and old number of non-zero elements
-    int num_cols = A_col_ptr.size() - 1;
-    int old_nnz = A_values.size();
-
-    // The new number of non-zero elements
-    int new_nnz = 0;
-
-    // Create a temporary vector to store the new column pointers
-    std::vector<int> temp_col_ptr(num_cols + 1, 0);
-
-    for (int j = 0; j < num_cols; ++j) {
-        // Current write position
-        int write_pos = new_nnz;
-
-        // Count non-zeros in the current column
-        int non_zeros_in_col = 0;
-
-        int start_idx = A_col_ptr[j];
-        int end_idx = A_col_ptr[j + 1];
-
-        for (int i = start_idx; i < end_idx; ++i) {
-            if (A_values[i] != 0.0) {
-                // In-place compaction of values and indices
-                A_values[write_pos] = A_values[i];
-                A_row_ind[write_pos] = A_row_ind[i];
-                write_pos++;
-                non_zeros_in_col++;
-            }
-        }
-        new_nnz += non_zeros_in_col;
-        temp_col_ptr[j + 1] = new_nnz;
-    }
-
-    // Resize the vectors to their new, smaller size
-    A_values.resize(new_nnz);
-    A_row_ind.resize(new_nnz);
-
-    // Update the column pointer vector
-    A_col_ptr = temp_col_ptr;
-}
-
-void BCSCtoCSR(
-    const std::vector<double>& A_values,
-    const std::vector<int>& A_row_ind,
-    const std::vector<int>& A_col_ptr,
-    int block_size,
-    int num_rows,
-    int num_cols,
-    std::vector<double>& C_values,
-    std::vector<int>& C_col_ind,
-    std::vector<int>& C_row_ptr) {
-
-    // Step 1: De-block and convert to a list of triplets (COO format)
-    std::vector<Triplet> triplets;
-
-    // A counter to keep track of the current block index in A_values
-    int block_idx_counter = 0;
-
-    // Loop through the BCSC columns (which are block columns)
-    int num_block_cols = A_col_ptr.size() - 1;
-    for (int j = 0; j < num_block_cols; ++j) {
-        int start_block = A_col_ptr[j];
-        int end_block = A_col_ptr[j + 1];
-
-        // Loop through the blocks in the current block column
-        for (int i = start_block; i < end_block; ++i) {
-            int block_row_start = A_row_ind[i] * block_size;
-            int block_col_start = j * block_size;
-
-            // Iterate through the elements of the dense block
-            for (int r = 0; r < block_size; ++r) {
-                for (int c = 0; c < block_size; ++c) {
-                    // Check for potential out-of-bounds access
-                    if (block_idx_counter >= A_values.size()) {
-                        std::cerr << "Error: BCSC index out of bounds." << std::endl;
-                        return;
-                    }
-
-                    double val = A_values[block_idx_counter];
-                    block_idx_counter++;
-
-                    if (val != 0.0) {
-                        triplets.push_back({block_row_start + r, block_col_start + c, val});
-                    }
-                }
-            }
-        }
-    }
-
-    // The rest of the code is correct, assuming the triplet list is built properly
-    // Step 2: Sort the triplets by row index, then column index
-    std::sort(triplets.begin(), triplets.end(), compareTriplets);
-
-    // Step 3: Convert the sorted triplets to CSR format
-    C_values.resize(triplets.size());
-    C_col_ind.resize(triplets.size());
-    C_row_ptr.assign(num_rows + 1, 0);
-
-    for (size_t i = 0; i < triplets.size(); ++i) {
-        C_values[i] = triplets[i].val;
-        C_col_ind[i] = triplets[i].col;
-        C_row_ptr[triplets[i].row + 1]++;
-    }
-
-    // Step 4: Convert the row pointer counts to cumulative sums
-    for (int i = 1; i <= num_rows; ++i) {
-        C_row_ptr[i] += C_row_ptr[i - 1];
-    }
-}
-
-void BlockedCustomtoCSR(
-    const std::vector<double>& A_values,
-    const std::vector<int>& A_row_ind,
-    const std::vector<int>& A_col_ptr,
-    int block_size,
-    int num_rows,
-    int num_cols,
-    std::vector<double>& C_values,
-    std::vector<int>& C_col_ind,
-    std::vector<int>& C_row_ptr) {
-
-    std::vector<Triplet> triplets;
-
-    int num_block_cols = A_col_ptr.size() - 1;
-
-    // The index for the Drows vector, which holds the row indices for each element
-    int Drows_idx = 0;
-
-    for (int j_block = 0; j_block < num_block_cols; ++j_block) {
-        int start_idx = A_col_ptr[j_block];
-        int end_idx = A_col_ptr[j_block + 1];
-
-        // The column for the current block
-        int col_block_start = j_block * block_size;
-
-        // Loop over the values within this block column
-        for (int i = start_idx; i < end_idx; ++i) {
-            // Reconstruct the global row index from the block structure
-            int global_row_block = A_row_ind[i] / block_size;
-            int local_row = A_row_ind[i] % block_size;
-            int global_row = global_row_block * block_size + local_row;
-
-            double val = A_values[i];
-
-            if (val != 0.0) {
-                triplets.push_back({global_row, col_block_start, val});
-            }
-        }
-    }
-
-    // Sort the triplets by row and column
-    std::sort(triplets.begin(), triplets.end(), compareTriplets);
-
-    C_values.resize(triplets.size());
-    C_col_ind.resize(triplets.size());
-    C_row_ptr.assign(num_rows + 1, 0);
-
-    for (size_t i = 0; i < triplets.size(); ++i) {
-        C_values[i] = triplets[i].val;
-        C_col_ind[i] = triplets[i].col;
-
-        if (triplets[i].row + 1 < C_row_ptr.size()) {
-            C_row_ptr[triplets[i].row + 1]++;
-        } else {
-            std::cerr << "Error: Row index out of bounds for C_row_ptr." << std::endl;
-            return;
-        }
-    }
-
-    // Convert counts to cumulative sums
-    for (int i = 1; i <= num_rows; ++i) {
-        C_row_ptr[i] += C_row_ptr[i - 1];
-    }
-}
-
 void BCSRrecttoCSR(
     std::vector<double>& Bval,
     std::vector<int>& Bcol_ind,
@@ -347,41 +166,107 @@ void BCSRrecttoCSR(
     }
 }
 
-void constructCSRvals(
-    const std::vector<double>& Cval,
-    const std::vector<int>& Bcol_ind,
-    const std::vector<int>& Brow_ptr,
-    int Br, int Bc,
-    std::vector<double>& Cval_csr) {
+void CustomtoCSR(std::vector<double>& Dvals, std::vector<int>& Drows, std::vector<int>& Dcols, std::vector<double>& csrDvals, std::vector<int>& csrDcols, std::vector<int>& csrDrows){
+    int D_m = Dcols.size() - 1;
+    std::vector<int> Cols(Dvals.size());
 
-    int num_br = Brow_ptr.size() - 1;
-    int num_bc = *std::max_element(Bcol_ind.begin(), Bcol_ind.end()) + 1;
-    int M = num_br * Br;
-    int N = num_bc * Bc;
-
-    int csr_idx = 0;
-
-    for (int I = 0; I < num_br; I++) {
-        int block_start = Brow_ptr[I];
-        int block_end = Brow_ptr[I + 1];
-        for (int r = 0; r < Br; r++) {
-            int i = I * Br + r;
-            if (i >= M) break;
-            for (int block_idx = block_start; block_idx < block_end; block_idx++) {
-                int J = Bcol_ind[block_idx];
-                for (int c = 0; c < Bc; c++) {
-                    int j = J * Bc + c;
-                    if (j >= N) continue;
-                    int block_element_idx = block_idx * Br * Bc + r * Bc + c;
-                    double value = Cval[block_element_idx];
-                    if (value != 0) {
-                        Cval_csr.push_back(value);
-                        csr_idx++;
-                    }
-                }
-            }
+    for (int i=0; i< Dcols.size()-1; i++){
+        for (int j=Dcols[i]; j<Dcols[i+1]; j++){
+            Cols[j] = i;
         }
     }
+
+    std::vector<std::tuple<double, int, int>> COO;
+
+    for (int i=0; i<Dvals.size(); i++){
+        COO.push_back(std::make_tuple(Dvals[i], Drows[i], Cols[i]));
+    }
+
+    std::sort(COO.begin(), COO.end(), compareTuple);
+
+    auto new_end = std::remove_if(COO.begin(), COO.end(),
+        [](const auto& t) {
+            // Check if the first element (index 0) is equal to zero
+            return std::get<0>(t) == 0;
+        });
+
+    COO.erase(new_end, COO.end());
+
+    csrDvals.resize(COO.size());
+    csrDcols.resize(COO.size());
+    csrDrows.assign(D_m + 1, 0);
+
+    for (int i=0; i<COO.size(); i++){
+        csrDvals[i] = std::get<0>(COO[i]);
+        csrDcols[i] = std::get<2>(COO[i]);
+
+        csrDrows[std::get<1>(COO[i]) + 1]++;
+    }
+
+    std::partial_sum(csrDrows.begin(), csrDrows.end(), csrDrows.begin());
+}
+
+void squareCSCtoCSR(std::vector<double> vals, std::vector<int> rows, std::vector<int> cols, std::vector<double>& vals_, std::vector<int>& rows_, std::vector<int>& cols_)
+{
+    int sizeDvals = size(vals);
+    int sizeDcols = size(cols);
+
+    std::vector<int> Cols(sizeDvals);
+
+    for(int i=0; i<sizeDcols-1; i++){
+      for(int j=cols[i];j<cols[i+1];j++){
+        Cols[j] = i;
+      }
+    }
+
+    std::vector<std::tuple<int,double,int>> ConvertVec;
+
+    for(int i=0; i<sizeDvals; i++){
+      ConvertVec.push_back(std::make_tuple(rows[i],vals[i],Cols[i]));
+    }
+
+    std::sort(ConvertVec.begin(),ConvertVec.end());
+
+    auto it = ConvertVec.begin();
+    while (it != ConvertVec.end()) {
+        auto range_end = std::find_if(it, ConvertVec.end(),
+            [it](const std::tuple<int, double, int>& tup) {
+                return std::get<0>(tup) != std::get<0>(*it);
+            });
+
+        std::sort(it, range_end,
+            [](const std::tuple<int, double, int>& a, const std::tuple<int, double, int>& b) {
+                return std::get<2>(a) < std::get<2>(b);
+            });
+
+        it = range_end;
+    }
+
+    for(int i=0; i<sizeDvals; i++){
+        //std::cout << "{" << std::get<0>(ConvertVec[i]) << ", "  << std::get<1>(ConvertVec[i]) << ", " << std::get<2>(ConvertVec[i]) << "}" << std::endl;
+        vals_[i] = std::get<1>(ConvertVec[i]);
+        cols_[i] = std::get<2>(ConvertVec[i]);
+    }
+
+    for(int target = 0; target< sizeDcols-1; target++){
+      it = std::find_if(ConvertVec.begin(), ConvertVec.end(),
+          [target](const std::tuple<int, double, int>& tup) {
+              return std::get<0>(tup) == target;
+          });
+
+      if (it != ConvertVec.end()) {
+          rows_[target] = std::distance(ConvertVec.begin(),it);
+      } else {
+          std::cout << target << " not found in the third element of any tuple.\n";
+      }
+    }
+
+    for (int i=1; i<sizeDcols-1; i++){
+        if(rows_[i] == 0){
+            rows_[i] = rows_[i+1];
+        }
+    }
+    rows_[sizeDcols-1] = cols[sizeDcols-1];
 }
 
 void CPUBx(const std::vector<double>& Bvals,
@@ -426,6 +311,52 @@ void CPUCz(const std::vector<double>& Cvals,
     }
 }
 
+void rocsparseBx(double* vals,
+                int* cols,
+                int* rows,
+                double* x,
+                double* y,
+                int B_M,
+                int B_N,
+                int B_nnz,
+                rocsparse_handle handle,
+                rocsparse_mat_descr descr_B,
+                rocsparse_mat_info B_info) {
+    double alpha = 1.0;
+    double beta = 0.0;
+
+    ROCSPARSE_CALL(rocsparse_dcsrmv_analysis(handle, rocsparse_operation_none, B_M, B_N, B_nnz, descr_B, vals, rows, cols, B_info));
+
+    ROCSPARSE_CALL(rocsparse_dcsrmv(handle, rocsparse_operation_none, B_M, B_N, B_nnz, &alpha, descr_B, vals, rows, cols, B_info, x, &beta, y));
+
+    HIP_CALL(hipGetLastError()); // Check for errors
+    HIP_CALL(hipDeviceSynchronize()); // Synchronize after kernel execution
+}
+
+// Method for operation y = y - C_w^T * x with rocsparse method, C_w must be in CSR format
+void rocsparseCz(double* vals,
+                int* cols,
+                int* rows,
+                double* x,
+                double* y,
+                int C_M,
+                int C_N,
+                int C_nnz,
+                rocsparse_handle handle,
+                rocsparse_mat_descr descr_C,
+                rocsparse_mat_info C_info) {
+    double alpha = -1.0;
+    double beta = 1.0;
+
+    ROCSPARSE_CALL(rocsparse_dcsrmv_analysis(handle, rocsparse_operation_transpose, C_M, C_N, C_nnz, descr_C, vals, rows, cols, C_info));
+
+    ROCSPARSE_CALL(rocsparse_dcsrmv(handle, rocsparse_operation_transpose, C_M, C_N, C_nnz, &alpha, descr_C, vals, rows, cols, C_info, x, &beta, y));
+
+    HIP_CALL(hipGetLastError()); // Check for errors
+    HIP_CALL(hipDeviceSynchronize()); // Synchronize after kernel execution
+}
+
+
 int main(int argc, char ** argv)
 {
     void *UMFPACK_Symbolic, *UMFPACK_Numeric;
@@ -458,8 +389,10 @@ int main(int argc, char ** argv)
 
     int B_m = Brows.size() - 1;
     int B_n = *std::max_element(Bcols.begin(), Bcols.end()) + 1;
+    std::cout << "B_m = " << B_m << std::endl;
 
     int M = B_m * block_m;
+    std::cout << "M = " << M << std::endl;
 
     umfpack_di_symbolic(M, M, Dcols.data(), Drows.data(), Dvals.data(), &UMFPACK_Symbolic, nullptr, nullptr);
     umfpack_di_numeric(Dcols.data(), Drows.data(), Dvals.data(), UMFPACK_Symbolic, &UMFPACK_Numeric, nullptr, nullptr);
@@ -495,20 +428,24 @@ int main(int argc, char ** argv)
 
     // std::cout << "##################################################################" << std::endl;
 
-    // std::vector<double> csrBvals;
-    // std::vector<int> csrBcols;
-    // std::vector<int> csrBrows;
+    std::vector<double> csrBvals;
+    std::vector<int> csrBcols;
+    std::vector<int> csrBrows;
 
-    // std::vector<double> csrCvals;
-    // std::vector<int> csrCcols;
-    // std::vector<int> csrCrows;
+    std::vector<double> csrCvals;
+    std::vector<int> csrCcols;
+    std::vector<int> csrCrows;
 
-    // //CustomtoCSR(Dvals, Drows, Dcols, csrDvals, csrDcols, csrDrows);
-    // // BlockedCustomtoCSR(Dvals, Drows, Dcols, block_m, D_m, D_n, csrDvals, csrDcols, csrDrows);
+    std::vector<double> csrDvals;
+    std::vector<int> csrDcols;
+    std::vector<int> csrDrows;
 
-    // BCSRrecttoCSR(Bvals, Bcols, Brows, block_m, block_n, csrBvals, csrBcols, csrBrows);
+    //squareCSCtoCSR(Dvals, Drows, Dcols, csrDvals, csrDrows, csrDcols); // Segmentation fault (?)
+    CustomtoCSR(Dvals, Drows, Dcols, csrDvals, csrDcols, csrDrows);
 
-    // BCSRrecttoCSR(Cvals, Bcols, Brows, block_m, block_n, csrCvals, csrCcols, csrCrows);
+    BCSRrecttoCSR(Bvals, Bcols, Brows, block_m, block_n, csrBvals, csrBcols, csrBrows);
+
+    BCSRrecttoCSR(Cvals, Bcols, Brows, block_m, block_n, csrCvals, csrCcols, csrCrows);
 
     // printVector(csrBvals, "csrBvals");
     // printVector(csrBcols, "csrBcols");
@@ -516,6 +453,219 @@ int main(int argc, char ** argv)
     // printVector(csrCvals, "csrCvals");
     // printVector(csrCcols, "csrCcols");
     // printVector(csrCrows, "csrCrows");
+    printVector(csrDvals, "csrDvals");
+    printVector(csrDcols, "csrDcols");
+    printVector(csrDrows, "csrDrows");
+
+    // RocSPARSE
+
+    double one  = 1.0;
+    rocsparse_int rocM;
+    rocsparse_int rocN;
+    rocsparse_int Nrhs = 1;
+    rocsparse_int lda;
+    rocsparse_int ldb;
+    rocsparse_mat_info ilu_info, B_info, C_info;
+    rocsparse_mat_descr descr_M, descr_L, descr_U, descr_B, descr_C;
+    std::size_t d_bufferSize_M, d_bufferSize_L, d_bufferSize_U, d_bufferSize;
+    void *d_buffer;
+    rocsparse_handle handle;
+    rocsparse_operation operation = rocsparse_operation_none;
+    rocsparse_int nnzs;
+    rocsparse_int zero_position;
+    rocsparse_status status;
+
+    // Device arrays
+    double *d_Dvals;
+    int *d_Dcols;
+    int *d_Drows;
+    double *d_Bvals;
+    int *d_Bcols;
+    int *d_Brows;
+    double *d_Cvals;
+    int *d_Ccols;
+    int *d_Crows;
+    double *d_z;
+    double *d_z_aux;
+    double *d_x;
+    double *d_y;
+
+    rocM = size(csrDrows) - 1;
+    ldb = rocM;
+    nnzs = size(csrDvals);
+
+    std::cout << "rocM = " << rocM << std::endl;
+    std::cout << "ldb = " << ldb << std::endl;
+    std::cout << "nnzs = " << nnzs << std::endl;
+
+    HIP_CALL(hipMalloc(&d_Dvals, sizeof(double)*size(csrDvals)));
+    checkHIPAlloc(d_Dvals);
+    HIP_CALL(hipMalloc(&d_Dcols, sizeof(int)*size(csrDcols)));
+    checkHIPAlloc(d_Dcols);
+    HIP_CALL(hipMalloc(&d_Drows, sizeof(int)*size(csrDrows)));
+    checkHIPAlloc(d_Drows);
+    HIP_CALL(hipMalloc(&d_Bvals, sizeof(double)*size(csrBvals)));
+    checkHIPAlloc(d_Bvals);
+    HIP_CALL(hipMalloc(&d_Bcols, sizeof(int)*size(csrBcols)));
+    checkHIPAlloc(d_Bcols);
+    HIP_CALL(hipMalloc(&d_Brows, sizeof(int)*size(csrBrows)));
+    checkHIPAlloc(d_Brows);
+    HIP_CALL(hipMalloc(&d_Cvals, sizeof(double)*size(csrCvals)));
+    checkHIPAlloc(d_Cvals);
+    HIP_CALL(hipMalloc(&d_Ccols, sizeof(int)*size(csrCcols)));
+    checkHIPAlloc(d_Ccols);
+    HIP_CALL(hipMalloc(&d_Crows, sizeof(int)*size(csrCrows)));
+    checkHIPAlloc(d_Crows);
+    // HIP_CALL(hipMalloc(&d_x_elem, sizeof(double)*dim*size(Bcols)));
+    // checkHIPAlloc(d_x_elem);
+    HIP_CALL(hipMalloc(&d_z, sizeof(double)*ldb*Nrhs));
+    checkHIPAlloc(d_z);
+    HIP_CALL(hipMalloc(&d_z_aux, sizeof(double)*ldb*Nrhs));
+    checkHIPAlloc(d_z_aux);
+    HIP_CALL(hipMalloc(&d_x, sizeof(double)*size(x)));
+    checkHIPAlloc(d_x);
+    HIP_CALL(hipMalloc(&d_y, sizeof(double)*size(y)));
+    checkHIPAlloc(d_y);
+
+    HIP_CALL(hipMemcpy(d_Dvals, csrDvals.data(), size(csrDvals)*sizeof(double), hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_Dcols, csrDcols.data(), size(csrDcols)*sizeof(int), hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_Drows, csrDrows.data(), size(csrDrows)*sizeof(int), hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_Bvals, csrBvals.data(), size(csrBvals)*sizeof(double), hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_Bcols, csrBcols.data(), size(csrBcols)*sizeof(int), hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_Brows, csrBrows.data(), size(csrBrows)*sizeof(int), hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_Cvals, csrCvals.data(), size(csrCvals)*sizeof(double), hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_Ccols, csrCcols.data(), size(csrCcols)*sizeof(int), hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_Crows, csrCrows.data(), size(csrCrows)*sizeof(int), hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_x, x.data(), size(x)*sizeof(double), hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_y, y.data(), size(y)*sizeof(double), hipMemcpyHostToDevice));
+
+    ROCSPARSE_CALL(rocsparse_create_handle(&handle));
+
+    // Create matrix descriptor for matrix M
+    ROCSPARSE_CALL(rocsparse_create_mat_descr(&descr_M));
+    // Matrix descriptor and info for B_w and C_w
+    ROCSPARSE_CALL(rocsparse_create_mat_descr(&descr_B));
+    ROCSPARSE_CALL(rocsparse_create_mat_info(&B_info));
+    ROCSPARSE_CALL(rocsparse_create_mat_descr(&descr_C));
+    ROCSPARSE_CALL(rocsparse_create_mat_info(&C_info));
+
+    ROCSPARSE_CALL(rocsparse_create_mat_descr(&descr_L));
+    ROCSPARSE_CALL(rocsparse_set_mat_fill_mode(descr_L, rocsparse_fill_mode_lower));
+    ROCSPARSE_CALL(rocsparse_set_mat_diag_type(descr_L, rocsparse_diag_type_unit));
+
+    ROCSPARSE_CALL(rocsparse_create_mat_descr(&descr_U));
+    ROCSPARSE_CALL(rocsparse_set_mat_fill_mode(descr_U, rocsparse_fill_mode_upper));
+    ROCSPARSE_CALL(rocsparse_set_mat_diag_type(descr_U, rocsparse_diag_type_non_unit));
+
+    // Create matrix info structure
+    ROCSPARSE_CALL(rocsparse_create_mat_info(&ilu_info));
+    // Obtain required buffer sizes
+    ROCSPARSE_CALL(rocsparse_dcsrilu0_buffer_size(handle, rocM, nnzs,
+						  descr_M, d_Dvals, d_Drows, d_Dcols, ilu_info, &d_bufferSize_M));
+    ROCSPARSE_CALL(rocsparse_dcsrsv_buffer_size(handle, operation, rocM, nnzs,
+						descr_L, d_Dvals, d_Drows, d_Dcols, ilu_info, &d_bufferSize_L));
+    ROCSPARSE_CALL(rocsparse_dcsrsv_buffer_size(handle, operation, rocM, nnzs,
+						descr_U, d_Dvals, d_Drows, d_Dcols, ilu_info, &d_bufferSize_U));
+    d_bufferSize = std::max(d_bufferSize_M, std::max(d_bufferSize_L, d_bufferSize_U));
+    HIP_CALL(hipMalloc(&d_buffer, d_bufferSize));
+
+    // Perform analysis steps
+    ROCSPARSE_CALL(rocsparse_dcsrilu0_analysis(handle, \
+                               rocM, nnzs, descr_M, d_Dvals, d_Drows, d_Dcols, \
+					        ilu_info, rocsparse_analysis_policy_reuse, rocsparse_solve_policy_auto, d_buffer));
+    ROCSPARSE_CALL(rocsparse_dcsrsv_analysis(handle, operation, \
+                             rocM, nnzs, descr_L, d_Dvals, d_Drows, d_Dcols, \
+					      ilu_info, rocsparse_analysis_policy_reuse, rocsparse_solve_policy_auto, d_buffer));
+    ROCSPARSE_CALL(rocsparse_dcsrsv_analysis(handle, operation, \
+                             rocM, nnzs, descr_U, d_Dvals, d_Drows, d_Dcols, \
+					     ilu_info, rocsparse_analysis_policy_reuse, rocsparse_solve_policy_auto, d_buffer));
+
+    // Check for zero pivot
+    status = rocsparse_csrilu0_zero_pivot(handle, ilu_info, &zero_position);
+    if (status != rocsparse_status_success) {
+        printf("--- RocSPARSE Error --- L has structural and/or numerical zero at L(%d,%d)\n", zero_position, zero_position);
+    }
+
+    ROCSPARSE_CALL(rocsparse_dcsrilu0(handle, rocM, nnzs, descr_M,
+				      d_Dvals, d_Drows, d_Dcols, ilu_info, rocsparse_solve_policy_auto, d_buffer));
+
+    status = rocsparse_csrilu0_zero_pivot(handle, ilu_info, &zero_position);
+    if (status != rocsparse_status_success) {
+        printf("--- RocSPARSE Error --- L has structural and/or numerical zero at L(%d,%d)\n", zero_position, zero_position);
+    }
+
+    HIP_CALL(hipMemset(d_z, 0, ldb*Nrhs*sizeof(double)));
+
+    int B_M = csrBrows.size() - 1;
+    int B_N = *std::max_element(csrBcols.begin(), csrBcols.end()) + 1;
+    int B_nnz = csrBvals.size();
+    rocsparseBx(d_Bvals, d_Bcols, d_Brows, d_x, d_z, B_M, B_N, B_nnz, handle, descr_B, B_info);
+
+    std::vector<double> h_z1;
+    h_z1.resize(B_M);
+
+    HIP_CALL(hipMemcpy(h_z1.data(), d_z, sizeof(double) * B_M, hipMemcpyDeviceToHost));
+
+    ROCSPARSE_CALL(rocsparse_dcsrsv_solve(handle, \
+                              operation, rocM, nnzs, &one, \
+					  descr_L, d_Dvals, d_Drows, d_Dcols,  ilu_info, d_z, d_z_aux, rocsparse_solve_policy_auto, d_buffer));
+    ROCSPARSE_CALL(rocsparse_dcsrsv_solve(handle,\
+                              operation, rocM, nnzs, &one, \
+					  descr_U, d_Dvals, d_Drows, d_Dcols, ilu_info, d_z_aux, d_z, rocsparse_solve_policy_auto, d_buffer));
+
+    std::vector<double> h_z2;
+    h_z2.resize(B_M);
+
+    HIP_CALL(hipMemcpy(h_z2.data(), d_z, sizeof(double) * B_M, hipMemcpyDeviceToHost));
+
+    int C_M = csrCrows.size() - 1;
+    int C_N = *std::max_element(csrCcols.begin(), csrCcols.end()) + 1;
+    int C_nnz = csrCvals.size();
+
+    rocsparseCz(d_Bvals, d_Bcols, d_Brows, d_z, d_y, C_M, C_N, C_nnz, handle, descr_C, C_info);
+
+    std::vector<double> h_y;
+    h_y.resize(y.size());
+
+    HIP_CALL(hipMemcpy(h_y.data(), d_y, sizeof(double) * B_M, hipMemcpyDeviceToHost));
+
+
+    for (int i = 0; i < B_M; i++) {
+        printf("index %d error = %f \n", i, h_z1[i] - z1[i]);
+    }
+    printf("\n");
+    for (int i = 0; i < B_M; i++) {
+        printf("index %d error = %f \n", i, h_z2[i] - z2[i]);
+    }
+    printf("\n");
+    for (int i = 0; i < y.size(); i++) {
+        printf("index %d error = %f \n", i, h_y[i] - y[i]);
+    }
+
+
+    ROCSPARSE_CALL(rocsparse_destroy_handle(handle));
+    ROCSPARSE_CALL(rocsparse_destroy_mat_descr(descr_M));
+    ROCSPARSE_CALL(rocsparse_destroy_mat_descr(descr_L));
+    ROCSPARSE_CALL(rocsparse_destroy_mat_descr(descr_U));
+    ROCSPARSE_CALL(rocsparse_destroy_mat_descr(descr_B));
+    ROCSPARSE_CALL(rocsparse_destroy_mat_descr(descr_C));
+    ROCSPARSE_CALL(rocsparse_destroy_mat_info(ilu_info));
+    ROCSPARSE_CALL(rocsparse_destroy_mat_info(B_info));
+    ROCSPARSE_CALL(rocsparse_destroy_mat_info(C_info));
+
+    HIP_CALL(hipFree(d_Dvals));
+    HIP_CALL(hipFree(d_Dcols));
+    HIP_CALL(hipFree(d_Drows));
+    HIP_CALL(hipFree(d_Bvals));
+    HIP_CALL(hipFree(d_Bcols));
+    HIP_CALL(hipFree(d_Brows));
+    HIP_CALL(hipFree(d_Cvals));
+    HIP_CALL(hipFree(d_Ccols));
+    HIP_CALL(hipFree(d_Crows));
+    HIP_CALL(hipFree(d_z));
+    HIP_CALL(hipFree(d_z_aux));
+    HIP_CALL(hipFree(d_x));
+    HIP_CALL(hipFree(d_y));
 
     umfpack_di_free_symbolic(&UMFPACK_Symbolic);
     umfpack_di_free_numeric(&UMFPACK_Numeric);

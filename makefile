@@ -1,16 +1,20 @@
 # Compilers and related
 CFLAG         = -Ofast -g
-CXX           = g++
+CXX           = hipcc
 
-# DUNE
-LDFLAGS_DUNE = -ldunecommon # -ldunegeometry
+# DUNE/UMFPACK
 DUNE_FLAGS = $(shell pkg-config --cflags --libs dune-istl)
 SUITESPARSE_FLAGS = $(shell pkg-config --cflags --libs suitesparse)
 UMFPACK_LIBS = -lumfpack -lamd -lsuitesparseconfig
 
-LDFLAGS = $(DUNE_FLAGS) $(UMFPACK_LIBS)
+# ROCM/ROCSPARSE
+ROCM_PATH = /opt/rocm-6.2.0
+ROCSPARSE_INCLUDE = -I$(ROCM_PATH)/include
+ROCSPARSE_LIBS = -lrocsparse -lrocblas
 
-CFLAGS_ALL = $(CFLAG) $(shell pkg-config --cflags dune-istl) $(shell pkg-config --cflags suitesparse)
+LDFLAGS = -Wl,-rpath=$(ROCM_PATH)/lib -L$(ROCM_PATH)/lib $(ROCSPARSE_LIBS) $(DUNE_FLAGS) $(UMFPACK_LIBS)
+
+CFLAGS_ALL = $(CFLAG) $(shell pkg-config --cflags dune-istl) $(shell pkg-config --cflags suitesparse) $(ROCSPARSE_INCLUDE)
 
 # Source code
 OBJS= main.o
