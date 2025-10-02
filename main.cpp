@@ -5,13 +5,11 @@
 #include <iostream>
 #include <math.h>
 #include <vector>
-#include <string>
 
 #include "linearSystemData.hpp"
 #include "umfpackSolver.hpp"
 #include "conversionData.hpp"
 #include "rocsparseSolver.hpp"
-#include "errorReport.hpp"
 
 #include <dune/common/timer.hh>
 
