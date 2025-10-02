@@ -20,7 +20,8 @@ namespace WellSolver
             std::cout << "Data check: Dvals size is " << data_.Dvals.size() << std::endl;
             std::cout << "Data check: Dcols size is " << data_.Dcols.size() << std::endl;
             std::cout << "Data check: Drows size is " << data_.Drows.size() << std::endl;
-            std::cout << "Block Dimensions of D_w: " << B_m << " x " << B_n << std::endl;
+            std::cout << "Block Dimensions of B_w: " << B_m << " x " << B_n << std::endl;
+            printf("############################################################## \n");
         }
 
         umfpack_di_symbolic(M, M, data_.Dcols.data(), data_.Drows.data(), data_.Dvals.data(), &UMFPACK_Symbolic, nullptr, nullptr);
@@ -83,7 +84,4 @@ namespace WellSolver
             }
         }
     }
-
-
-
 }

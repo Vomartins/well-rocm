@@ -22,7 +22,8 @@ CFLAGS_ALL = $(CFLAG) $(shell pkg-config --cflags dune-istl) $(shell pkg-config 
 # Source code
 OBJS= main.o \
     linearSystemData.o \
-    umfpackSolver.o
+    umfpackSolver.o \
+    conversionData.o
 all:
 	@echo "===================================="
 	@echo "              Building              "
@@ -31,6 +32,7 @@ all:
 	rsync -ru main.cpp \
 	          linearSystemData.cpp linearSystemData.hpp \
 		      umfpackSolver.cpp umfpackSolver.hpp \
+			  conversionData.cpp conversionData.hpp \
 			  makefile build/bin
 	$(MAKE) -C build/bin WellSolverComp
 	cp build/bin/WellSolverComp ./WellSolverComp

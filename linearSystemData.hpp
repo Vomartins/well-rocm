@@ -25,6 +25,8 @@ namespace WellSolver
 
             LinearSystemData(const int block_m, const int block_n);
 
+            void printDataSizes();
+
             template <class Scalar>
             void readVector(std::vector<Scalar>& vec, std::string filename) {
                 std::ifstream input_file(filename);

@@ -16,4 +16,19 @@ namespace WellSolver
         readVector(x, "data/vecx.txt");
         readVector(y, "data/vecy.txt");
     }
+
+    void LinearSystemData::printDataSizes()
+    {
+        printf("######################### Data sizes ######################### \n");
+        printf("Vector x size : %zu \n", x.size());
+        printf("Vector y size : %zu \n", y.size());
+        printf("Dvals size : %zu \n", Dvals.size());
+        printf("Dcols size : %zu \n", Dcols.size());
+        printf("Drows size : %zu \n", Drows.size());
+        printf("Bvals size : %zu \n", Bvals.size());
+        printf("Bcols size : %zu \n", Bcols.size());
+        printf("Brows size : %zu \n", Brows.size());
+        printf("Cvals size : %zu \n", Cvals.size());
+        printf("############################################################## \n");
+    }
 }

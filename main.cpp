@@ -1,4 +1,5 @@
 
+#include "conversionData.hpp"
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -12,6 +13,7 @@
 
 #include "linearSystemData.hpp"
 #include "umfpackSolver.hpp"
+#include "conversionData.hpp"
 
 #include <dune/common/timer.hh>
 
@@ -144,13 +146,6 @@ bool compareTriplets(const Triplet& a, const Triplet& b) {
     return a.col < b.col;
 }
 
-bool compareTuple(const std::tuple<double, int, int>& a, const std::tuple<double, int, int>& b) {
-    if (std::get<1>(a) != std::get<1>(b)) {
-        return std::get<1>(a) < std::get<1>(b);
-    }
-    return std::get<2>(a) < std::get<2>(b);
-}
-
 void BCSRrecttoCSR(
     std::vector<double>& Bval,
     std::vector<int>& Bcol_ind,
@@ -206,45 +201,6 @@ void BCSRrecttoCSR(
     }
 }
 
-void CustomtoCSR(std::vector<double>& Dvals, std::vector<int>& Drows, std::vector<int>& Dcols, std::vector<double>& csrDvals, std::vector<int>& csrDcols, std::vector<int>& csrDrows){
-    int D_m = Dcols.size() - 1;
-    std::vector<int> Cols(Dvals.size());
-
-    for (int i=0; i< Dcols.size()-1; i++){
-        for (int j=Dcols[i]; j<Dcols[i+1]; j++){
-            Cols[j] = i;
-        }
-    }
-
-    std::vector<std::tuple<double, int, int>> COO;
-
-    for (int i=0; i<Dvals.size(); i++){
-        COO.push_back(std::make_tuple(Dvals[i], Drows[i], Cols[i]));
-    }
-
-    std::sort(COO.begin(), COO.end(), compareTuple);
-
-    auto new_end = std::remove_if(COO.begin(), COO.end(),
-        [](const auto& t) {
-            // Check if the first element (index 0) is equal to zero
-            return std::get<0>(t) == 0;
-        });
-
-    COO.erase(new_end, COO.end());
-
-    csrDvals.resize(COO.size());
-    csrDcols.resize(COO.size());
-    csrDrows.assign(D_m + 1, 0);
-
-    for (int i=0; i<COO.size(); i++){
-        csrDvals[i] = std::get<0>(COO[i]);
-        csrDcols[i] = std::get<2>(COO[i]);
-
-        csrDrows[std::get<1>(COO[i]) + 1]++;
-    }
-
-    std::partial_sum(csrDrows.begin(), csrDrows.end(), csrDrows.begin());
-}
 
 void squareCSCtoCSR(std::vector<double> vals, std::vector<int> rows, std::vector<int> cols, std::vector<double>& vals_, std::vector<int>& rows_, std::vector<int>& cols_)
 {
@@ -469,58 +425,29 @@ int main(int argc, char ** argv)
 
     WellSolver::LinearSystemData data(block_m, block_n);
 
-    std::cout << "size(x) = " << data.x.size() << std::endl;
-    std::cout << "size(y) = " << data.y.size() << std::endl;
-    std::cout << data.Bvals.size() << std::endl;
-    std::cout << data.Bcols.size() << std::endl;
-    std::cout << data.Brows.size() << std::endl;
-    data.printVector(data.Cvals, "Cvals");
-    data.printVector(data.Bvals, "Bvals");
-    data.printVector(data.Bcols, "Bcols");
-    data.printVector(data.Brows, "Brows");
-    std::cout << "##################################################################" << std::endl;
+    data.printDataSizes();
 
     WellSolver::UMFPACKSolver umfpackSolver(data);
 
     umfpackSolver.cpuBx();
-    data.printVector(umfpackSolver.z1, "z1 UMFPACK");
+    // data.printVector(umfpackSolver.z1, "z1 UMFPACK");
 
     umfpackSolver.solveSystem();
-    data.printVector(umfpackSolver.z2, "z2 UMFPACK");
+    // data.printVector(umfpackSolver.z2, "z2 UMFPACK");
 
     umfpackSolver.cpuCz();
-    data.printVector(umfpackSolver.y, "y UMFPACK");
+    // data.printVector(umfpackSolver.y, "y UMFPACK");
 
+    // Data sparse storage format convertion
 
-
-
-
-
-
-
-
-
-
-
-
-    std::vector<double> csrBvals;
-    std::vector<int> csrBcols;
-    std::vector<int> csrBrows;
-
-    std::vector<double> csrCvals;
-    std::vector<int> csrCcols;
-    std::vector<int> csrCrows;
-
-    std::vector<double> csrDvals;
-    std::vector<int> csrDcols;
-    std::vector<int> csrDrows;
+    WellSolver::ConversionData convData(data);
 
     //squareCSCtoCSR(Dvals, Drows, Dcols, csrDvals, csrDrows, csrDcols); // Segmentation fault (?)
-    CustomtoCSR(data.Dvals, data.Drows, data.Dcols, csrDvals, csrDcols, csrDrows);
+    convData.CustomtoCSR();
 
-    BCSRrecttoCSR(data.Bvals, data.Bcols, data.Brows, data.block_m_, data.block_n_, csrBvals, csrBcols, csrBrows);
+    convData.ConvertB();
 
-    BCSRrecttoCSR(data.Cvals, data.Bcols, data.Brows, data.block_m_, data.block_n_, csrCvals, csrCcols, csrCrows);
+    convData.ConvertC();
 
     // printVector(csrBvals, "csrBvals");
     // printVector(csrBcols, "csrBcols");
@@ -565,31 +492,31 @@ int main(int argc, char ** argv)
     double *d_x;
     double *d_y;
 
-    rocM = size(csrDrows) - 1;
+    rocM = size(convData.csrDrows) - 1;
     ldb = rocM;
-    nnzs = size(csrDvals);
+    nnzs = size(convData.csrDvals);
 
     std::cout << "rocM = " << rocM << std::endl;
     std::cout << "ldb = " << ldb << std::endl;
     std::cout << "nnzs = " << nnzs << std::endl;
 
-    HIP_CALL(hipMalloc(&d_Dvals, sizeof(double)*size(csrDvals)));
+    HIP_CALL(hipMalloc(&d_Dvals, sizeof(double)*size(convData.csrDvals)));
     checkHIPAlloc(d_Dvals);
-    HIP_CALL(hipMalloc(&d_Dcols, sizeof(int)*size(csrDcols)));
+    HIP_CALL(hipMalloc(&d_Dcols, sizeof(int)*size(convData.csrDcols)));
     checkHIPAlloc(d_Dcols);
-    HIP_CALL(hipMalloc(&d_Drows, sizeof(int)*size(csrDrows)));
+    HIP_CALL(hipMalloc(&d_Drows, sizeof(int)*size(convData.csrDrows)));
     checkHIPAlloc(d_Drows);
-    HIP_CALL(hipMalloc(&d_Bvals, sizeof(double)*size(csrBvals)));
+    HIP_CALL(hipMalloc(&d_Bvals, sizeof(double)*size(convData.csrBvals)));
     checkHIPAlloc(d_Bvals);
-    HIP_CALL(hipMalloc(&d_Bcols, sizeof(int)*size(csrBcols)));
+    HIP_CALL(hipMalloc(&d_Bcols, sizeof(int)*size(convData.csrBcols)));
     checkHIPAlloc(d_Bcols);
-    HIP_CALL(hipMalloc(&d_Brows, sizeof(int)*size(csrBrows)));
+    HIP_CALL(hipMalloc(&d_Brows, sizeof(int)*size(convData.csrBrows)));
     checkHIPAlloc(d_Brows);
-    HIP_CALL(hipMalloc(&d_Cvals, sizeof(double)*size(csrCvals)));
+    HIP_CALL(hipMalloc(&d_Cvals, sizeof(double)*size(convData.csrCvals)));
     checkHIPAlloc(d_Cvals);
-    HIP_CALL(hipMalloc(&d_Ccols, sizeof(int)*size(csrCcols)));
+    HIP_CALL(hipMalloc(&d_Ccols, sizeof(int)*size(convData.csrCcols)));
     checkHIPAlloc(d_Ccols);
-    HIP_CALL(hipMalloc(&d_Crows, sizeof(int)*size(csrCrows)));
+    HIP_CALL(hipMalloc(&d_Crows, sizeof(int)*size(convData.csrCrows)));
     checkHIPAlloc(d_Crows);
     // HIP_CALL(hipMalloc(&d_x_elem, sizeof(double)*dim*size(Bcols)));
     // checkHIPAlloc(d_x_elem);
@@ -602,15 +529,15 @@ int main(int argc, char ** argv)
     HIP_CALL(hipMalloc(&d_y, sizeof(double)*size(data.y)));
     checkHIPAlloc(d_y);
 
-    HIP_CALL(hipMemcpy(d_Dvals, csrDvals.data(), size(csrDvals)*sizeof(double), hipMemcpyHostToDevice));
-    HIP_CALL(hipMemcpy(d_Dcols, csrDcols.data(), size(csrDcols)*sizeof(int), hipMemcpyHostToDevice));
-    HIP_CALL(hipMemcpy(d_Drows, csrDrows.data(), size(csrDrows)*sizeof(int), hipMemcpyHostToDevice));
-    HIP_CALL(hipMemcpy(d_Bvals, csrBvals.data(), size(csrBvals)*sizeof(double), hipMemcpyHostToDevice));
-    HIP_CALL(hipMemcpy(d_Bcols, csrBcols.data(), size(csrBcols)*sizeof(int), hipMemcpyHostToDevice));
-    HIP_CALL(hipMemcpy(d_Brows, csrBrows.data(), size(csrBrows)*sizeof(int), hipMemcpyHostToDevice));
-    HIP_CALL(hipMemcpy(d_Cvals, csrCvals.data(), size(csrCvals)*sizeof(double), hipMemcpyHostToDevice));
-    HIP_CALL(hipMemcpy(d_Ccols, csrCcols.data(), size(csrCcols)*sizeof(int), hipMemcpyHostToDevice));
-    HIP_CALL(hipMemcpy(d_Crows, csrCrows.data(), size(csrCrows)*sizeof(int), hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_Dvals, convData.csrDvals.data(), size(convData.csrDvals)*sizeof(double), hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_Dcols, convData.csrDcols.data(), size(convData.csrDcols)*sizeof(int), hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_Drows, convData.csrDrows.data(), size(convData.csrDrows)*sizeof(int), hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_Bvals, convData.csrBvals.data(), size(convData.csrBvals)*sizeof(double), hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_Bcols, convData.csrBcols.data(), size(convData.csrBcols)*sizeof(int), hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_Brows, convData.csrBrows.data(), size(convData.csrBrows)*sizeof(int), hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_Cvals, convData.csrCvals.data(), size(convData.csrCvals)*sizeof(double), hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_Ccols, convData.csrCcols.data(), size(convData.csrCcols)*sizeof(int), hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_Crows, convData.csrCrows.data(), size(convData.csrCrows)*sizeof(int), hipMemcpyHostToDevice));
     HIP_CALL(hipMemcpy(d_x, data.x.data(), size(data.x)*sizeof(double), hipMemcpyHostToDevice));
     HIP_CALL(hipMemcpy(d_y, data.y.data(), size(data.y)*sizeof(double), hipMemcpyHostToDevice));
 
@@ -671,9 +598,9 @@ int main(int argc, char ** argv)
 
     HIP_CALL(hipMemset(d_z, 0, ldb*Nrhs*sizeof(double)));
 
-    int B_M = csrBrows.size() - 1;
-    int B_N = *std::max_element(csrBcols.begin(), csrBcols.end()) + 1;
-    int B_nnz = csrBvals.size();
+    int B_M = convData.csrBrows.size() - 1;
+    int B_N = *std::max_element(convData.csrBcols.begin(), convData.csrBcols.end()) + 1;
+    int B_nnz = convData.csrBvals.size();
     rocsparseBx(d_Bvals, d_Bcols, d_Brows, d_x, d_z, B_M, B_N, B_nnz, handle, descr_B, B_info);
 
     std::vector<double> h_z1;
@@ -693,9 +620,9 @@ int main(int argc, char ** argv)
 
     HIP_CALL(hipMemcpy(h_z2.data(), d_z, sizeof(double) * B_M, hipMemcpyDeviceToHost));
 
-    int C_M = csrCrows.size() - 1;
-    int C_N = *std::max_element(csrCcols.begin(), csrCcols.end()) + 1;
-    int C_nnz = csrCvals.size();
+    int C_M = convData.csrCrows.size() - 1;
+    int C_N = *std::max_element(convData.csrCcols.begin(), convData.csrCcols.end()) + 1;
+    int C_nnz = convData.csrCvals.size();
 
     rocsparseCz(d_Bvals, d_Bcols, d_Brows, d_z, d_y, C_M, C_N, C_nnz, handle, descr_C, C_info);
 
@@ -721,12 +648,12 @@ int main(int argc, char ** argv)
     Dz.resize(umfpackSolver.z1.size());
 
     printf("--- Infinity norm of residual of D_w z = B_w x (RocSPARSE) --- \n");
-    spmv_csr(csrDvals, csrDcols, csrDrows, h_z2, Dz, csrDrows.size() - 1);
+    spmv_csr(convData.csrDvals, convData.csrDcols, convData.csrDrows, h_z2, Dz, convData.csrDrows.size() - 1);
     rel_err = relativeErrorInfinityNorm(Dz, h_z1);
     printf("|Dz-Bx| = %f \n", rel_err);
 
     printf("--- Infinity norm of residual of D_w z = B_w x (UMFPACK) --- \n");
-    spmv_csr(csrDvals, csrDcols, csrDrows, umfpackSolver.z2, Dz, csrDrows.size() - 1);
+    spmv_csr(convData.csrDvals, convData.csrDcols, convData.csrDrows, umfpackSolver.z2, Dz, convData.csrDrows.size() - 1);
     rel_err = relativeErrorInfinityNorm(Dz, umfpackSolver.z1);
     printf("|Dz-Bx| = %f \n", rel_err);
 
