@@ -200,29 +200,32 @@ int main(int argc, char ** argv)
     double rel_err;
     std::vector<double> Dz;
 
+    printf("\n\n");
+    printf("Error Report \n");
+
     printf("--- Relative error h_z1 and z1 --- \n");
     rel_err = relativeErrorInfinityNorm(rocsparseSolver.h_z1, umfpackSolver.z1);
-    printf("rel_error = %f \n", rel_err);
+    printf("rel_error = %.4E \n", rel_err);
 
     printf("--- Relative error h_z2 and z2 --- \n");
     rel_err = relativeErrorInfinityNorm(rocsparseSolver.h_z2, umfpackSolver.z2);
-    printf("rel_error = %f \n", rel_err);
+    printf("rel_error = %.4E \n", rel_err);
 
     printf("--- Relative error h_y and y --- \n");
     rel_err = relativeErrorInfinityNorm(rocsparseSolver.h_y, umfpackSolver.y);
-    printf("rel_error = %f \n", rel_err);
+    printf("rel_error = %.4E \n", rel_err);
 
     Dz.resize(umfpackSolver.z1.size());
 
     printf("--- Infinity norm of residual of D_w z = B_w x (RocSPARSE) --- \n");
     spmv_csr(convData.csrDvals, convData.csrDcols, convData.csrDrows, rocsparseSolver.h_z2, Dz, convData.csrDrows.size() - 1);
     rel_err = relativeErrorInfinityNorm(Dz, rocsparseSolver.h_z1);
-    printf("|Dz-Bx| = %f \n", rel_err);
+    printf("|Dz-Bx| = %.4E \n", rel_err);
 
     printf("--- Infinity norm of residual of D_w z = B_w x (UMFPACK) --- \n");
     spmv_csr(convData.csrDvals, convData.csrDcols, convData.csrDrows, umfpackSolver.z2, Dz, convData.csrDrows.size() - 1);
     rel_err = relativeErrorInfinityNorm(Dz, umfpackSolver.z1);
-    printf("|Dz-Bx| = %f \n", rel_err);
+    printf("|Dz-Bx| = %.4E \n", rel_err);
 
     return 0;
 }
