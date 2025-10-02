@@ -35,6 +35,7 @@ all:
 		      umfpackSolver.cpp umfpackSolver.hpp \
 			  conversionData.cpp conversionData.hpp \
 			  rocsparseSolver.cpp rocsparseSolver.hpp \
+			  error.hpp \
 			  makefile build/bin
 	$(MAKE) -C build/bin WellSolverComp
 	cp build/bin/WellSolverComp ./WellSolverComp

@@ -217,10 +217,10 @@ namespace WellSolver
 
         ROCSPARSE_CALL(rocsparse_dcsrmv(handle, rocsparse_operation_none, B_M, B_N, B_nnz, &alpha, descr_B, d_Bvals, d_Brows, d_Bcols, B_info, d_x, &beta, d_z));
 
+        z1ToHost();
+
         HIP_CALL(hipGetLastError()); // Check for errors
         HIP_CALL(hipDeviceSynchronize()); // Synchronize after kernel execution
-
-        z1ToHost();
     }
 
     void RocSPARSESolver::z1ToHost()
@@ -236,7 +236,6 @@ namespace WellSolver
         ROCSPARSE_CALL(rocsparse_dcsrsv_solve(handle,\
                                   operation, rocM, nnzs, &one, \
 					  descr_U, d_Dvals, d_Drows, d_Dcols, ilu_info, d_z_aux, d_z, rocsparse_solve_policy_auto, d_buffer));
-
         z2ToHost();
     }
 
@@ -254,10 +253,10 @@ namespace WellSolver
 
         ROCSPARSE_CALL(rocsparse_dcsrmv(handle, rocsparse_operation_transpose, C_M, C_N, C_nnz, &alpha, descr_C, d_Cvals, d_Crows, d_Ccols, C_info, d_z, &beta, d_y));
 
+        yToHost();
+
         HIP_CALL(hipGetLastError()); // Check for errors
         HIP_CALL(hipDeviceSynchronize()); // Synchronize after kernel execution
-
-        yToHost();
     }
 
     void RocSPARSESolver::yToHost()
