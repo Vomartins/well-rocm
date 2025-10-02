@@ -126,4 +126,19 @@ namespace WellSolver
     {
         BCSRrecttoCSR(data_.Cvals, data_.Bcols, data_.Brows, block_m_, block_n_, csrCvals, csrCcols, csrCrows);
     }
+
+    void ConversionData::printDataSizes()
+    {
+        printf("###################### Data sizes (CSR) ###################### \n");
+        printf("Vector x size : %zu \n", data_.x.size());
+        printf("Vector y size : %zu \n", data_.y.size());
+        printf("Dvals size : %zu \n", csrDvals.size());
+        printf("Dcols size : %zu \n", csrDcols.size());
+        printf("Drows size : %zu \n", csrDrows.size());
+        printf("Bvals size : %zu \n", csrBvals.size());
+        printf("Bcols size : %zu \n", csrBcols.size());
+        printf("Brows size : %zu \n", csrBrows.size());
+        printf("Cvals size : %zu \n", csrCvals.size());
+        printf("############################################################## \n");
+    }
 }

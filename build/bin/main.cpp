@@ -449,15 +449,7 @@ int main(int argc, char ** argv)
 
     convData.ConvertC();
 
-    // printVector(csrBvals, "csrBvals");
-    // printVector(csrBcols, "csrBcols");
-    // printVector(csrBrows, "csrBrows");
-    // printVector(csrCvals, "csrCvals");
-    // printVector(csrCcols, "csrCcols");
-    // // printVector(csrCrows, "csrCrows");
-    // printVector(csrDvals, "csrDvals");
-    // printVector(csrDcols, "csrDcols");
-    // printVector(csrDrows, "csrDrows");
+    convData.printDataSizes();
 
     // RocSPARSE
 

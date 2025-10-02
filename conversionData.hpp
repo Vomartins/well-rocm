@@ -42,6 +42,8 @@ namespace WellSolver
             void ConvertB();
 
             void ConvertC();
+
+            void printDataSizes();
     };
 }
 #endif
