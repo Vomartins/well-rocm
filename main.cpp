@@ -63,7 +63,7 @@ double relativeErrorInfinityNorm(const std::vector<double>& v1, const std::vecto
         double diff = v1[i] - v2[i];
         abs_error_inf_norm = std::max(abs_error_inf_norm, std::abs(diff));
     }
-    printf("abs_error = %f \n", abs_error_inf_norm);
+    printf("abs_error = %.4E \n", abs_error_inf_norm);
 
     // 3. Calculate the infinity norm of the reference vector (v2)
     double v2_inf_norm = infinityNorm(v2);
