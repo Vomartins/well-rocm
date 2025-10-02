@@ -97,6 +97,69 @@ void CustomtoCSR(std::vector<double>& Dvals, std::vector<int>& Drows, std::vecto
     std::partial_sum(csrDrows.begin(), csrDrows.end(), csrDrows.begin());
 }
 
+void squareCSCtoCSR(std::vector<double> vals, std::vector<int> rows, std::vector<int> cols, std::vector<double>& vals_, std::vector<int>& rows_, std::vector<int>& cols_)
+{
+    int sizeDvals = size(vals);
+    int sizeDcols = size(cols);
+
+    std::vector<int> Cols(sizeDvals);
+
+    for(int i=0; i<sizeDcols-1; i++){
+      for(int j=cols[i];j<cols[i+1];j++){
+        Cols[j] = i;
+      }
+    }
+
+    std::vector<std::tuple<int,double,int>> ConvertVec;
+
+    for(int i=0; i<sizeDvals; i++){
+      ConvertVec.push_back(std::make_tuple(rows[i],vals[i],Cols[i]));
+    }
+
+    std::sort(ConvertVec.begin(),ConvertVec.end());
+
+    auto it = ConvertVec.begin();
+    while (it != ConvertVec.end()) {
+        auto range_end = std::find_if(it, ConvertVec.end(),
+            [it](const std::tuple<int, double, int>& tup) {
+                return std::get<0>(tup) != std::get<0>(*it);
+            });
+
+        std::sort(it, range_end,
+            [](const std::tuple<int, double, int>& a, const std::tuple<int, double, int>& b) {
+                return std::get<2>(a) < std::get<2>(b);
+            });
+
+        it = range_end;
+    }
+
+    for(int i=0; i<sizeDvals; i++){
+        //std::cout << "{" << std::get<0>(ConvertVec[i]) << ", "  << std::get<1>(ConvertVec[i]) << ", " << std::get<2>(ConvertVec[i]) << "}" << std::endl;
+        vals_[i] = std::get<1>(ConvertVec[i]);
+        cols_[i] = std::get<2>(ConvertVec[i]);
+    }
+
+    for(int target = 0; target< sizeDcols-1; target++){
+      it = std::find_if(ConvertVec.begin(), ConvertVec.end(),
+          [target](const std::tuple<int, double, int>& tup) {
+              return std::get<0>(tup) == target;
+          });
+
+      if (it != ConvertVec.end()) {
+          rows_[target] = std::distance(ConvertVec.begin(),it);
+      } else {
+          std::cout << target << " not found in the third element of any tuple.\n";
+      }
+    }
+
+    for (int i=1; i<sizeDcols-1; i++){
+        if(rows_[i] == 0){
+            rows_[i] = rows_[i+1];
+        }
+    }
+    rows_[sizeDcols-1] = cols[sizeDcols-1];
+}
+
 void removeZerosFromCSCInPlace(
     std::vector<double>& A_values,
     std::vector<int>& A_row_ind,
@@ -142,6 +205,8 @@ void removeZerosFromCSCInPlace(
     // Update the column pointer vector
     A_col_ptr = temp_col_ptr;
 }
+
+
 
 void BCSCtoCSR(
     const std::vector<double>& A_values,

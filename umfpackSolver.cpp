@@ -1,8 +1,5 @@
 #include "umfpackSolver.hpp"
 
-#include <suitesparse/umfpack.h>
-#include <algorithm>
-
 namespace WellSolver
 {
     UMFPACKSolver::UMFPACKSolver(LinearSystemData& data)

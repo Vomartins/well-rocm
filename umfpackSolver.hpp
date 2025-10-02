@@ -3,6 +3,9 @@
 
 #include "linearSystemData.hpp"
 
+#include <suitesparse/umfpack.h>
+#include <algorithm>
+
 namespace WellSolver
 {
     class UMFPACKSolver

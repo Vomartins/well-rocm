@@ -23,7 +23,8 @@ CFLAGS_ALL = $(CFLAG) $(shell pkg-config --cflags dune-istl) $(shell pkg-config 
 OBJS= main.o \
     linearSystemData.o \
     umfpackSolver.o \
-    conversionData.o
+    conversionData.o \
+    rocsparseSolver.o
 all:
 	@echo "===================================="
 	@echo "              Building              "
@@ -33,6 +34,7 @@ all:
 	          linearSystemData.cpp linearSystemData.hpp \
 		      umfpackSolver.cpp umfpackSolver.hpp \
 			  conversionData.cpp conversionData.hpp \
+			  rocsparseSolver.cpp rocsparseSolver.hpp \
 			  makefile build/bin
 	$(MAKE) -C build/bin WellSolverComp
 	cp build/bin/WellSolverComp ./WellSolverComp

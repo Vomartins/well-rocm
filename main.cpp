@@ -4,22 +4,19 @@
 #include "config.h"
 #endif
 #include <iostream>
-#include <algorithm>
 #include <math.h>
-#include <fstream>
 #include <vector>
 #include <string>
-#include <numeric>
 
 #include "linearSystemData.hpp"
 #include "umfpackSolver.hpp"
 #include "conversionData.hpp"
+#include "rocsparseSolver.hpp"
 
 #include <dune/common/timer.hh>
 
-#include <suitesparse/umfpack.h>
 
-#include <rocsparse/rocsparse.h>
+
 
 #include <Eigen/Dense>
 #include <limits> // For infinity()
@@ -128,183 +125,6 @@ double relativeErrorInfinityNorm(const std::vector<double>& v1, const std::vecto
 
     // 5. Calculate and return the relative error
     return abs_error_inf_norm / v2_inf_norm;
-}
-
-
-// Structure to hold a single non-zero element in COO format
-struct Triplet {
-    int row;
-    int col;
-    double val;
-};
-
-// Comparison function to sort triplets by row, then column
-bool compareTriplets(const Triplet& a, const Triplet& b) {
-    if (a.row != b.row) {
-        return a.row < b.row;
-    }
-    return a.col < b.col;
-}
-
-void BCSRrecttoCSR(
-    std::vector<double>& Bval,
-    std::vector<int>& Bcol_ind,
-    std::vector<int>& Brow_ptr,
-    int Br, int Bc,
-    std::vector<double>& val,
-    std::vector<int>& col_ind,
-    std::vector<int>& row_ptr) {
-
-    //std::cout << " ------ BCSRrecttoCSR ------ " << std::endl;
-    int num_br = Brow_ptr.size() - 1;
-    int num_bc = *std::max_element(Bcol_ind.begin(), Bcol_ind.end()) + 1;
-    int M = num_br * Br;
-    int N = num_bc * Bc;
-    //std::cout << "num_br = " << num_br << " -- " << "num_bc = " << num_bc << " -- " << "M = " << M << " -- " << "N = " << N << std::endl;
-
-    row_ptr.resize(M + 1);
-    row_ptr[0] = 0;
-
-    int csr_idx = 0; // Current index for CSR arrays val and col_ind
-
-    for (int I = 0; I < num_br; I++) {
-        int block_start = Brow_ptr[I];
-        int block_end = Brow_ptr[I + 1];
-
-        for (int r = 0; r < Br; r++) {
-            int i = I * Br + r;
-            if ( i >= M) break;
-
-            for (int block_idx = block_start; block_idx < block_end; block_idx++) {
-                int J  = Bcol_ind[block_idx]; // Block column index
-
-                for ( int c = 0; c < Bc; c++) {
-                    int j = J * Bc + c; // Global column index
-                    if (j >= N) continue;
-
-                    //Assuming row-major block storage
-                    int block_element_idx = block_idx * Br * Bc + r * Bc + c;
-
-                    double value = Bval[block_element_idx];
-
-                    if ( value != 0) {
-                        val.push_back(value);
-                        col_ind.push_back(j);
-                        csr_idx++;
-                    }
-                }
-            }
-            if (i + 1 <= M){
-                row_ptr[i + 1] = csr_idx;
-            }
-        }
-    }
-}
-
-
-void squareCSCtoCSR(std::vector<double> vals, std::vector<int> rows, std::vector<int> cols, std::vector<double>& vals_, std::vector<int>& rows_, std::vector<int>& cols_)
-{
-    int sizeDvals = size(vals);
-    int sizeDcols = size(cols);
-
-    std::vector<int> Cols(sizeDvals);
-
-    for(int i=0; i<sizeDcols-1; i++){
-      for(int j=cols[i];j<cols[i+1];j++){
-        Cols[j] = i;
-      }
-    }
-
-    std::vector<std::tuple<int,double,int>> ConvertVec;
-
-    for(int i=0; i<sizeDvals; i++){
-      ConvertVec.push_back(std::make_tuple(rows[i],vals[i],Cols[i]));
-    }
-
-    std::sort(ConvertVec.begin(),ConvertVec.end());
-
-    auto it = ConvertVec.begin();
-    while (it != ConvertVec.end()) {
-        auto range_end = std::find_if(it, ConvertVec.end(),
-            [it](const std::tuple<int, double, int>& tup) {
-                return std::get<0>(tup) != std::get<0>(*it);
-            });
-
-        std::sort(it, range_end,
-            [](const std::tuple<int, double, int>& a, const std::tuple<int, double, int>& b) {
-                return std::get<2>(a) < std::get<2>(b);
-            });
-
-        it = range_end;
-    }
-
-    for(int i=0; i<sizeDvals; i++){
-        //std::cout << "{" << std::get<0>(ConvertVec[i]) << ", "  << std::get<1>(ConvertVec[i]) << ", " << std::get<2>(ConvertVec[i]) << "}" << std::endl;
-        vals_[i] = std::get<1>(ConvertVec[i]);
-        cols_[i] = std::get<2>(ConvertVec[i]);
-    }
-
-    for(int target = 0; target< sizeDcols-1; target++){
-      it = std::find_if(ConvertVec.begin(), ConvertVec.end(),
-          [target](const std::tuple<int, double, int>& tup) {
-              return std::get<0>(tup) == target;
-          });
-
-      if (it != ConvertVec.end()) {
-          rows_[target] = std::distance(ConvertVec.begin(),it);
-      } else {
-          std::cout << target << " not found in the third element of any tuple.\n";
-      }
-    }
-
-    for (int i=1; i<sizeDcols-1; i++){
-        if(rows_[i] == 0){
-            rows_[i] = rows_[i+1];
-        }
-    }
-    rows_[sizeDcols-1] = cols[sizeDcols-1];
-}
-
-void CPUBx(const std::vector<double>& Bvals,
-            const std::vector<int>& Bcols,
-            const std::vector<int>& Brows,
-            const std::vector<double>& x,
-            std::vector<double>& z,
-            int dim, int dim_wells, int Mb) {
-    for (unsigned int row = 0; row < Mb; ++row) {
-        // for every block in the row
-        for (unsigned int blockID = Brows[row]; blockID < Brows[row + 1]; ++blockID) {
-            unsigned int colIdx = Bcols[blockID];
-            for (unsigned int j = 0; j < dim_wells; ++j) {
-                double temp = 0.0;
-                for (unsigned int k = 0; k < dim; ++k) {
-                    temp += Bvals[blockID * dim * dim_wells + j * dim + k] * x[colIdx * dim + k];
-                }
-                z[row * dim_wells + j] += temp;
-            }
-        }
-    }
-}
-
-void CPUCz(const std::vector<double>& Cvals,
-            const std::vector<int>& Bcols,
-            const std::vector<int>& Brows,
-            const std::vector<double>& z,
-            std::vector<double>& y,
-            int dim, int dim_wells, int Mb) {
-    for (unsigned int row = 0; row < Mb; ++row) {
-        // for every block in the row
-        for (unsigned int blockID = Brows[row]; blockID < Brows[row + 1]; ++blockID) {
-            unsigned int colIdx = Bcols[blockID];
-            for (unsigned int j = 0; j < dim; ++j) {
-                double temp = 0.0;
-                for (unsigned int k = 0; k < dim_wells; ++k) {
-                    temp += Cvals[blockID * dim * dim_wells + j + k * dim] * z[row * dim_wells + k];
-                }
-                y[colIdx * dim + j] -= temp;
-            }
-        }
-    }
 }
 
 void rocsparseBx(double* vals,
