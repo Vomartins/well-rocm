@@ -11,9 +11,8 @@ namespace WellSolver
      M(B_m * block_m_),
      y(data_.y)
     {
-        std::cout << "UMFPACLSolver initialized with data." << std::endl;
-
         if (!data_.Dvals.empty()) {
+            std::cout << "UMFPACLSolver initialized with data." << std::endl;
             std::cout << "Data check: Dvals size is " << data_.Dvals.size() << std::endl;
             std::cout << "Data check: Dcols size is " << data_.Dcols.size() << std::endl;
             std::cout << "Data check: Drows size is " << data_.Drows.size() << std::endl;

@@ -21,43 +21,6 @@
 #include <Eigen/Dense>
 #include <limits> // For infinity()
 
-#define HIP_CALL(call)                                     \
-  do {                                                     \
-    hipError_t err = call;                                 \
-    if (hipSuccess != err) {                               \
-      printf("HIP ERROR (code = %d, %s) at %s:%d\n", err,  \
-             hipGetErrorString(err), __FILE__, __LINE__);  \
-      exit(1);                                             \
-    }                                                      \
-  } while (0)
-
-#define ROCSOLVER_CALL(call)                                                   \
-  do {                                                                         \
-    rocblas_status err = call;                                                 \
-    if (rocblas_status_success != err) {                                       \
-      printf("rocSOLVER ERROR (code = %d) at %s:%d\n", err, __FILE__,          \
-             __LINE__);                                                        \
-      exit(1);                                                                 \
-    }                                                                          \
-  } while (0)
-
-#define ROCSPARSE_CALL(call)                                                   \
-do {                                                                           \
-    rocsparse_status err = call;                                               \
-    if (rocsparse_status_success != err) {                                     \
-    printf("rocSPARSE ERROR (code = %d) at %s:%d\n", err, __FILE__,            \
-            __LINE__);                                                         \
-    exit(1);                                                                   \
-    }                                                                          \
-} while (0)
-
-void checkHIPAlloc(void* ptr) {
-    if (ptr == nullptr) {
-        std::cerr << "HIP malloc failed." << std::endl;
-        exit(1);
-    }
-}
-
 
 /**
  * @brief Calculates the infinity norm (L_infinity) of a vector.
@@ -127,51 +90,6 @@ double relativeErrorInfinityNorm(const std::vector<double>& v1, const std::vecto
     return abs_error_inf_norm / v2_inf_norm;
 }
 
-void rocsparseBx(double* vals,
-                int* cols,
-                int* rows,
-                double* x,
-                double* y,
-                int B_M,
-                int B_N,
-                int B_nnz,
-                rocsparse_handle handle,
-                rocsparse_mat_descr descr_B,
-                rocsparse_mat_info B_info) {
-    double alpha = 1.0;
-    double beta = 0.0;
-
-    ROCSPARSE_CALL(rocsparse_dcsrmv_analysis(handle, rocsparse_operation_none, B_M, B_N, B_nnz, descr_B, vals, rows, cols, B_info));
-
-    ROCSPARSE_CALL(rocsparse_dcsrmv(handle, rocsparse_operation_none, B_M, B_N, B_nnz, &alpha, descr_B, vals, rows, cols, B_info, x, &beta, y));
-
-    HIP_CALL(hipGetLastError()); // Check for errors
-    HIP_CALL(hipDeviceSynchronize()); // Synchronize after kernel execution
-}
-
-// Method for operation y = y - C_w^T * x with rocsparse method, C_w must be in CSR format
-void rocsparseCz(double* vals,
-                int* cols,
-                int* rows,
-                double* x,
-                double* y,
-                int C_M,
-                int C_N,
-                int C_nnz,
-                rocsparse_handle handle,
-                rocsparse_mat_descr descr_C,
-                rocsparse_mat_info C_info) {
-    double alpha = -1.0;
-    double beta = 1.0;
-
-    ROCSPARSE_CALL(rocsparse_dcsrmv_analysis(handle, rocsparse_operation_transpose, C_M, C_N, C_nnz, descr_C, vals, rows, cols, C_info));
-
-    ROCSPARSE_CALL(rocsparse_dcsrmv(handle, rocsparse_operation_transpose, C_M, C_N, C_nnz, &alpha, descr_C, vals, rows, cols, C_info, x, &beta, y));
-
-    HIP_CALL(hipGetLastError()); // Check for errors
-    HIP_CALL(hipDeviceSynchronize()); // Synchronize after kernel execution
-}
-
 /**
  * @brief Performs sparse matrix-vector multiplication (SpMV) y = D * x
  * for a matrix D stored in Compressed Sparse Row (CSR) format.
@@ -237,7 +155,6 @@ void spmv_csr(
     }
 }
 
-
 int main(int argc, char ** argv)
 {
     int block_m = 4;
@@ -262,7 +179,6 @@ int main(int argc, char ** argv)
 
     WellSolver::ConversionData convData(data);
 
-    //squareCSCtoCSR(Dvals, Drows, Dcols, csrDvals, csrDrows, csrDcols); // Segmentation fault (?)
     convData.CustomtoCSR();
 
     convData.ConvertB();
@@ -271,227 +187,39 @@ int main(int argc, char ** argv)
 
     convData.printDataSizes();
 
-    // RocSPARSE
+    WellSolver::RocSPARSESolver rocsparseSolver(convData);
 
-    double one  = 1.0;
-    rocsparse_int rocM;
-    rocsparse_int rocN;
-    rocsparse_int Nrhs = 1;
-    rocsparse_int lda;
-    rocsparse_int ldb;
-    rocsparse_mat_info ilu_info, B_info, C_info;
-    rocsparse_mat_descr descr_M, descr_L, descr_U, descr_B, descr_C;
-    std::size_t d_bufferSize_M, d_bufferSize_L, d_bufferSize_U, d_bufferSize;
-    void *d_buffer;
-    rocsparse_handle handle;
-    rocsparse_operation operation = rocsparse_operation_none;
-    rocsparse_int nnzs;
-    rocsparse_int zero_position;
-    rocsparse_status status;
+    rocsparseSolver.Bx();
 
-    // Device arrays
-    double *d_Dvals;
-    int *d_Dcols;
-    int *d_Drows;
-    double *d_Bvals;
-    int *d_Bcols;
-    int *d_Brows;
-    double *d_Cvals;
-    int *d_Ccols;
-    int *d_Crows;
-    double *d_z;
-    double *d_z_aux;
-    double *d_x;
-    double *d_y;
+    rocsparseSolver.solveDw();
 
-    rocM = size(convData.csrDrows) - 1;
-    ldb = rocM;
-    nnzs = size(convData.csrDvals);
-
-    std::cout << "rocM = " << rocM << std::endl;
-    std::cout << "ldb = " << ldb << std::endl;
-    std::cout << "nnzs = " << nnzs << std::endl;
-
-    HIP_CALL(hipMalloc(&d_Dvals, sizeof(double)*size(convData.csrDvals)));
-    checkHIPAlloc(d_Dvals);
-    HIP_CALL(hipMalloc(&d_Dcols, sizeof(int)*size(convData.csrDcols)));
-    checkHIPAlloc(d_Dcols);
-    HIP_CALL(hipMalloc(&d_Drows, sizeof(int)*size(convData.csrDrows)));
-    checkHIPAlloc(d_Drows);
-    HIP_CALL(hipMalloc(&d_Bvals, sizeof(double)*size(convData.csrBvals)));
-    checkHIPAlloc(d_Bvals);
-    HIP_CALL(hipMalloc(&d_Bcols, sizeof(int)*size(convData.csrBcols)));
-    checkHIPAlloc(d_Bcols);
-    HIP_CALL(hipMalloc(&d_Brows, sizeof(int)*size(convData.csrBrows)));
-    checkHIPAlloc(d_Brows);
-    HIP_CALL(hipMalloc(&d_Cvals, sizeof(double)*size(convData.csrCvals)));
-    checkHIPAlloc(d_Cvals);
-    HIP_CALL(hipMalloc(&d_Ccols, sizeof(int)*size(convData.csrCcols)));
-    checkHIPAlloc(d_Ccols);
-    HIP_CALL(hipMalloc(&d_Crows, sizeof(int)*size(convData.csrCrows)));
-    checkHIPAlloc(d_Crows);
-    // HIP_CALL(hipMalloc(&d_x_elem, sizeof(double)*dim*size(Bcols)));
-    // checkHIPAlloc(d_x_elem);
-    HIP_CALL(hipMalloc(&d_z, sizeof(double)*ldb*Nrhs));
-    checkHIPAlloc(d_z);
-    HIP_CALL(hipMalloc(&d_z_aux, sizeof(double)*ldb*Nrhs));
-    checkHIPAlloc(d_z_aux);
-    HIP_CALL(hipMalloc(&d_x, sizeof(double)*size(data.x)));
-    checkHIPAlloc(d_x);
-    HIP_CALL(hipMalloc(&d_y, sizeof(double)*size(data.y)));
-    checkHIPAlloc(d_y);
-
-    HIP_CALL(hipMemcpy(d_Dvals, convData.csrDvals.data(), size(convData.csrDvals)*sizeof(double), hipMemcpyHostToDevice));
-    HIP_CALL(hipMemcpy(d_Dcols, convData.csrDcols.data(), size(convData.csrDcols)*sizeof(int), hipMemcpyHostToDevice));
-    HIP_CALL(hipMemcpy(d_Drows, convData.csrDrows.data(), size(convData.csrDrows)*sizeof(int), hipMemcpyHostToDevice));
-    HIP_CALL(hipMemcpy(d_Bvals, convData.csrBvals.data(), size(convData.csrBvals)*sizeof(double), hipMemcpyHostToDevice));
-    HIP_CALL(hipMemcpy(d_Bcols, convData.csrBcols.data(), size(convData.csrBcols)*sizeof(int), hipMemcpyHostToDevice));
-    HIP_CALL(hipMemcpy(d_Brows, convData.csrBrows.data(), size(convData.csrBrows)*sizeof(int), hipMemcpyHostToDevice));
-    HIP_CALL(hipMemcpy(d_Cvals, convData.csrCvals.data(), size(convData.csrCvals)*sizeof(double), hipMemcpyHostToDevice));
-    HIP_CALL(hipMemcpy(d_Ccols, convData.csrCcols.data(), size(convData.csrCcols)*sizeof(int), hipMemcpyHostToDevice));
-    HIP_CALL(hipMemcpy(d_Crows, convData.csrCrows.data(), size(convData.csrCrows)*sizeof(int), hipMemcpyHostToDevice));
-    HIP_CALL(hipMemcpy(d_x, data.x.data(), size(data.x)*sizeof(double), hipMemcpyHostToDevice));
-    HIP_CALL(hipMemcpy(d_y, data.y.data(), size(data.y)*sizeof(double), hipMemcpyHostToDevice));
-
-    ROCSPARSE_CALL(rocsparse_create_handle(&handle));
-
-    // Create matrix descriptor for matrix M
-    ROCSPARSE_CALL(rocsparse_create_mat_descr(&descr_M));
-    // Matrix descriptor and info for B_w and C_w
-    ROCSPARSE_CALL(rocsparse_create_mat_descr(&descr_B));
-    ROCSPARSE_CALL(rocsparse_create_mat_info(&B_info));
-    ROCSPARSE_CALL(rocsparse_create_mat_descr(&descr_C));
-    ROCSPARSE_CALL(rocsparse_create_mat_info(&C_info));
-
-    ROCSPARSE_CALL(rocsparse_create_mat_descr(&descr_L));
-    ROCSPARSE_CALL(rocsparse_set_mat_fill_mode(descr_L, rocsparse_fill_mode_lower));
-    ROCSPARSE_CALL(rocsparse_set_mat_diag_type(descr_L, rocsparse_diag_type_unit));
-
-    ROCSPARSE_CALL(rocsparse_create_mat_descr(&descr_U));
-    ROCSPARSE_CALL(rocsparse_set_mat_fill_mode(descr_U, rocsparse_fill_mode_upper));
-    ROCSPARSE_CALL(rocsparse_set_mat_diag_type(descr_U, rocsparse_diag_type_non_unit));
-
-    // Create matrix info structure
-    ROCSPARSE_CALL(rocsparse_create_mat_info(&ilu_info));
-    // Obtain required buffer sizes
-    ROCSPARSE_CALL(rocsparse_dcsrilu0_buffer_size(handle, rocM, nnzs,
-						  descr_M, d_Dvals, d_Drows, d_Dcols, ilu_info, &d_bufferSize_M));
-    ROCSPARSE_CALL(rocsparse_dcsrsv_buffer_size(handle, operation, rocM, nnzs,
-						descr_L, d_Dvals, d_Drows, d_Dcols, ilu_info, &d_bufferSize_L));
-    ROCSPARSE_CALL(rocsparse_dcsrsv_buffer_size(handle, operation, rocM, nnzs,
-						descr_U, d_Dvals, d_Drows, d_Dcols, ilu_info, &d_bufferSize_U));
-    d_bufferSize = std::max(d_bufferSize_M, std::max(d_bufferSize_L, d_bufferSize_U));
-    HIP_CALL(hipMalloc(&d_buffer, d_bufferSize));
-
-    // Perform analysis steps
-    ROCSPARSE_CALL(rocsparse_dcsrilu0_analysis(handle, \
-                               rocM, nnzs, descr_M, d_Dvals, d_Drows, d_Dcols, \
-					        ilu_info, rocsparse_analysis_policy_reuse, rocsparse_solve_policy_auto, d_buffer));
-    ROCSPARSE_CALL(rocsparse_dcsrsv_analysis(handle, operation, \
-                             rocM, nnzs, descr_L, d_Dvals, d_Drows, d_Dcols, \
-					      ilu_info, rocsparse_analysis_policy_reuse, rocsparse_solve_policy_auto, d_buffer));
-    ROCSPARSE_CALL(rocsparse_dcsrsv_analysis(handle, operation, \
-                             rocM, nnzs, descr_U, d_Dvals, d_Drows, d_Dcols, \
-					     ilu_info, rocsparse_analysis_policy_reuse, rocsparse_solve_policy_auto, d_buffer));
-
-    // Check for zero pivot
-    status = rocsparse_csrilu0_zero_pivot(handle, ilu_info, &zero_position);
-    if (status != rocsparse_status_success) {
-        printf("--- RocSPARSE Error --- L has structural and/or numerical zero at L(%d,%d)\n", zero_position, zero_position);
-    }
-
-    ROCSPARSE_CALL(rocsparse_dcsrilu0(handle, rocM, nnzs, descr_M,
-				      d_Dvals, d_Drows, d_Dcols, ilu_info, rocsparse_solve_policy_auto, d_buffer));
-
-    status = rocsparse_csrilu0_zero_pivot(handle, ilu_info, &zero_position);
-    if (status != rocsparse_status_success) {
-        printf("--- RocSPARSE Error --- L has structural and/or numerical zero at L(%d,%d)\n", zero_position, zero_position);
-    }
-
-    HIP_CALL(hipMemset(d_z, 0, ldb*Nrhs*sizeof(double)));
-
-    int B_M = convData.csrBrows.size() - 1;
-    int B_N = *std::max_element(convData.csrBcols.begin(), convData.csrBcols.end()) + 1;
-    int B_nnz = convData.csrBvals.size();
-    rocsparseBx(d_Bvals, d_Bcols, d_Brows, d_x, d_z, B_M, B_N, B_nnz, handle, descr_B, B_info);
-
-    std::vector<double> h_z1;
-    h_z1.resize(B_M);
-
-    HIP_CALL(hipMemcpy(h_z1.data(), d_z, sizeof(double) * B_M, hipMemcpyDeviceToHost));
-
-    ROCSPARSE_CALL(rocsparse_dcsrsv_solve(handle, \
-                              operation, rocM, nnzs, &one, \
-					  descr_L, d_Dvals, d_Drows, d_Dcols,  ilu_info, d_z, d_z_aux, rocsparse_solve_policy_auto, d_buffer));
-    ROCSPARSE_CALL(rocsparse_dcsrsv_solve(handle,\
-                              operation, rocM, nnzs, &one, \
-					  descr_U, d_Dvals, d_Drows, d_Dcols, ilu_info, d_z_aux, d_z, rocsparse_solve_policy_auto, d_buffer));
-
-    std::vector<double> h_z2;
-    h_z2.resize(B_M);
-
-    HIP_CALL(hipMemcpy(h_z2.data(), d_z, sizeof(double) * B_M, hipMemcpyDeviceToHost));
-
-    int C_M = convData.csrCrows.size() - 1;
-    int C_N = *std::max_element(convData.csrCcols.begin(), convData.csrCcols.end()) + 1;
-    int C_nnz = convData.csrCvals.size();
-
-    rocsparseCz(d_Bvals, d_Bcols, d_Brows, d_z, d_y, C_M, C_N, C_nnz, handle, descr_C, C_info);
-
-    std::vector<double> h_y;
-    h_y.resize(data.y.size());
-
-    HIP_CALL(hipMemcpy(h_y.data(), d_y, sizeof(double) * B_M, hipMemcpyDeviceToHost));
+    rocsparseSolver.Cz();
 
     double rel_err;
     printf("--- Relative error h_z1 and z1 --- \n");
-    rel_err = relativeErrorInfinityNorm(h_z1, umfpackSolver.z1);
+    rel_err = relativeErrorInfinityNorm(rocsparseSolver.h_z1, umfpackSolver.z1);
     printf("rel_error = %f \n", rel_err);
 
     printf("--- Relative error h_z2 and z2 --- \n");
-    rel_err = relativeErrorInfinityNorm(h_z2, umfpackSolver.z2);
+    rel_err = relativeErrorInfinityNorm(rocsparseSolver.h_z2, umfpackSolver.z2);
     printf("rel_error = %f \n", rel_err);
 
     printf("--- Relative error h_y and y --- \n");
-    rel_err = relativeErrorInfinityNorm(h_y, umfpackSolver.y);
+    rel_err = relativeErrorInfinityNorm(rocsparseSolver.h_y, umfpackSolver.y);
     printf("rel_error = %f \n", rel_err);
 
     std::vector<double> Dz;
     Dz.resize(umfpackSolver.z1.size());
 
     printf("--- Infinity norm of residual of D_w z = B_w x (RocSPARSE) --- \n");
-    spmv_csr(convData.csrDvals, convData.csrDcols, convData.csrDrows, h_z2, Dz, convData.csrDrows.size() - 1);
-    rel_err = relativeErrorInfinityNorm(Dz, h_z1);
+    spmv_csr(convData.csrDvals, convData.csrDcols, convData.csrDrows, rocsparseSolver.h_z2, Dz, convData.csrDrows.size() - 1);
+    rel_err = relativeErrorInfinityNorm(Dz, rocsparseSolver.h_z1);
     printf("|Dz-Bx| = %f \n", rel_err);
 
     printf("--- Infinity norm of residual of D_w z = B_w x (UMFPACK) --- \n");
     spmv_csr(convData.csrDvals, convData.csrDcols, convData.csrDrows, umfpackSolver.z2, Dz, convData.csrDrows.size() - 1);
     rel_err = relativeErrorInfinityNorm(Dz, umfpackSolver.z1);
     printf("|Dz-Bx| = %f \n", rel_err);
-
-    ROCSPARSE_CALL(rocsparse_destroy_handle(handle));
-    ROCSPARSE_CALL(rocsparse_destroy_mat_descr(descr_M));
-    ROCSPARSE_CALL(rocsparse_destroy_mat_descr(descr_L));
-    ROCSPARSE_CALL(rocsparse_destroy_mat_descr(descr_U));
-    ROCSPARSE_CALL(rocsparse_destroy_mat_descr(descr_B));
-    ROCSPARSE_CALL(rocsparse_destroy_mat_descr(descr_C));
-    ROCSPARSE_CALL(rocsparse_destroy_mat_info(ilu_info));
-    ROCSPARSE_CALL(rocsparse_destroy_mat_info(B_info));
-    ROCSPARSE_CALL(rocsparse_destroy_mat_info(C_info));
-
-    HIP_CALL(hipFree(d_Dvals));
-    HIP_CALL(hipFree(d_Dcols));
-    HIP_CALL(hipFree(d_Drows));
-    HIP_CALL(hipFree(d_Bvals));
-    HIP_CALL(hipFree(d_Bcols));
-    HIP_CALL(hipFree(d_Brows));
-    HIP_CALL(hipFree(d_Cvals));
-    HIP_CALL(hipFree(d_Ccols));
-    HIP_CALL(hipFree(d_Crows));
-    HIP_CALL(hipFree(d_z));
-    HIP_CALL(hipFree(d_z_aux));
-    HIP_CALL(hipFree(d_x));
-    HIP_CALL(hipFree(d_y));
 
     return 0;
 }
