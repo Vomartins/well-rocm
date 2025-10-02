@@ -152,11 +152,11 @@ void spmv_csr(
 
 int main(int argc, char ** argv)
 {
-    int block_m = 4;
-    int block_n = 3;
+    int block_m = 4; // Well dimension
+    int block_n = 3; // Reservoir dimension
 
     // Linear system data load
-    //
+
     WellSolver::LinearSystemData data(block_m, block_n);
 
     data.printDataSizes();
@@ -172,6 +172,8 @@ int main(int argc, char ** argv)
     umfpackSolver.cpuCz();
 
     // Data sparse storage format convertion
+    // D_w from Custom CSR to standard CSR
+    // B_w and C_w from blocked CSR to CSR
 
     WellSolver::ConversionData convData(data);
 
